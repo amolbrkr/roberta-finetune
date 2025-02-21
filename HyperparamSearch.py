@@ -29,31 +29,69 @@ DATA_DIR = "../Data/"
 TARGET_CLASS = "class_freefair"
 
 
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0):
-        super().__init__()
-        self.alpha = alpha  # Weight for Class 1
-        self.gamma = gamma  # Focusing parameter
-
-    def forward(self, inputs, targets):
-        ce_loss = nn.CrossEntropyLoss(reduction="none")(inputs, targets)
-        pt = torch.exp(-ce_loss)
-        focal_loss = (self.alpha * (1 - pt) ** self.gamma * ce_loss).mean()
-        return focal_loss
+def df_to_tensor(X, y, tokenizer):
+    input_ids, attention_masks = encode_texts(
+        X["text"].values, tokenizer, truncate_middle=False
+    )
+    labels = torch.tensor(y.values).long()
+    return TensorDataset(input_ids, attention_masks, labels)
 
 
-# Define the custom RobertaEI model (from Experiments.py)
+def check_classes(df, column):
+    print(df[column].value_counts(dropna=False) / df.shape[0] * 100, "\n")
+    print(df[column].value_counts())
+
+
+def clean_text(text):
+    if text is None:
+        return ""
+    text = re.sub(r"http\S+|www\.\S+", "", text)
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport
+        "\U0001F1E0-\U0001F1FF"  # flags
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "]+",
+        flags=re.UNICODE,
+    )
+    text = emoji_pattern.sub(r"", text)
+    text = re.sub(r"[\r\n]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def preprocess(df, min_wc=5):
+
+    df["text"] = df["text"].astype(str).apply(clean_text)
+
+    df["party"] = df["party"].astype(str).apply(lambda x: (x + " ") * 5)
+    df["text"] = df["party"] + " " + df["text"]
+
+    df["wc"] = df["text"].apply(lambda x: len(x.split()))
+    df = df[df["wc"] > min_wc]
+
+    return df
+
+
 class RobertaEI(RobertaForSequenceClassification):
-    def __init__(self, config, droput_rate, alpha, gamma):
+    def __init__(self, config, dropout_rate=0.1, alpha=0.25, gamma=2.0):
         super(RobertaEI, self).__init__(config)
         self.roberta = RobertaModel(config)
         self.dropout = nn.Dropout(
-            p=droput_rate
+            p=dropout_rate
         )  # You can adjust the dropout probability
-        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
-        # self.class_weights = cw
+        self.classifier = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(config.hidden_size, config.num_labels),
+        )
         self.alpha = alpha
         self.gamma = gamma
+
+        # self.classifier = nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(
         self,
@@ -79,7 +117,7 @@ class RobertaEI(RobertaForSequenceClassification):
 
         loss = None
         if labels is not None:
-            # loss_fct = nn.CrossEntropyLoss(weight=self.class_weights)
+            # loss_fct = nn.CrossEntropyLoss(weight=class_weights)
             loss_fct = FocalLoss(alpha=self.alpha, gamma=self.gamma)
             loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
 
@@ -87,41 +125,18 @@ class RobertaEI(RobertaForSequenceClassification):
         return ((loss,) + output) if loss is not None else output
 
 
-# Minimal preprocessing and data helper functions (from Experiments.py)
-def clean_text(text):
-    if text is None:
-        return ""
-    text = re.sub(r"http\S+|www\.\S+", "", text)
-    emoji_pattern = re.compile(
-        "["
-        "\U0001F600-\U0001F64F"  # emoticons
-        "\U0001F300-\U0001F5FF"  # symbols & pictographs
-        "\U0001F680-\U0001F6FF"  # transport
-        "\U0001F1E0-\U0001F1FF"  # flags
-        "\U00002702-\U000027B0"
-        "\U000024C2-\U0001F251"
-        "]+",
-        flags=re.UNICODE,
-    )
-    text = emoji_pattern.sub(r"", text)
-    text = re.sub(r"[\r\n]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0):
+        super().__init__()
+        self.alpha = alpha  # Weight for Class 1
+        self.gamma = gamma  # Focusing parameter
 
+    def forward(self, inputs, targets):
+        ce_loss = nn.CrossEntropyLoss(reduction="none")(inputs, targets)
+        pt = torch.exp(-ce_loss)
+        focal_loss = (self.alpha * (1 - pt) ** self.gamma * ce_loss).mean()
+        return focal_loss
 
-def preprocess(df, min_wc=5):
-    df["text"] = df["text"].astype(str).apply(clean_text)
-    # In Experiments.py party field is appended. Adjust if needed.
-    if "party" in df.columns:
-        df["party"] = df["party"].astype(str).apply(lambda x: (x + " ") * 5)
-        df["text"] = df["party"] + " " + df["text"]
-    df["wc"] = df["text"].apply(lambda x: len(x.split()))
-    df = df[df["wc"] > min_wc]
-    return df
-
-
-def check_classes(df, column):
-    print(df[column].value_counts(dropna=False) / df.shape[0] * 100, "\n")
-    print(df[column].value_counts())
 
 def encode_texts(texts, tokenizer, truncate_middle=True):
     input_ids = []
@@ -161,34 +176,6 @@ def encode_texts(texts, tokenizer, truncate_middle=True):
             attention_masks.append(encoded_dict["attention_mask"])
 
     return torch.cat(input_ids, dim=0), torch.cat(attention_masks, dim=0)
-
-def df_to_tensor(X, y, tokenizer):
-    input_ids, attention_masks = encode_texts(
-        X["text"].values, tokenizer, truncate_middle=False
-    )
-    labels = torch.tensor(y.values).long()
-    return TensorDataset(input_ids, attention_masks, labels)
-
-# def df_to_tensor(X, y, tokenizer, max_len=512):
-#     input_ids = []
-#     attention_masks = []
-#     texts = X["text"].values
-#     for text in texts:
-#         encoded_dict = tokenizer.encode_plus(
-#             text,
-#             add_special_tokens=True,
-#             truncation=True,
-#             max_length=max_len,
-#             padding="max_length",
-#             return_attention_mask=True,
-#             return_tensors="pt",
-#         )
-#         input_ids.append(encoded_dict["input_ids"])
-#         attention_masks.append(encoded_dict["attention_mask"])
-#     input_ids = torch.cat(input_ids, dim=0)
-#     attention_masks = torch.cat(attention_masks, dim=0)
-#     labels = torch.tensor(y.values).long().squeeze()
-#     return TensorDataset(input_ids, attention_masks, labels)
 
 
 def load_data(DATA_DIR):
@@ -268,7 +255,7 @@ def objective(trial):
     # Hyperparameters suggestions for batch size and learning rate
     batch_size = trial.suggest_categorical("batch_size", [8, 16, 32])
     lr = trial.suggest_float("lr", 8e-6, 2e-5, log=True)
-    num_epochs = trial.suggest_categorical("num_epochs", [5, 8, 10, 12])
+    num_epochs = trial.suggest_categorical("num_epochs", [5, 8, 10, 12, 15, 20])
 
     # Device setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -297,11 +284,11 @@ def objective(trial):
     )
 
     # Model setup
-    num_labels = len(np.unique(df[TARGET_CLASS]))
-    config = RobertaConfig.from_pretrained("roberta-base", num_labels=num_labels)
-    model = RobertaEI(
-        config,
-        droput_rate=trial.suggest_float("droput_rate", 0.1, 0.6),
+    # config = RobertaConfig.from_pretrained("roberta-base", num_labels=len(np.unique(df[TARGET_CLASS])))
+    model = RobertaEI.from_pretrained(
+        "roberta-base",
+        num_labels=len(np.unique(df[TARGET_CLASS])),
+        dropout_rate=trial.suggest_float("dropout_rate", 0.1, 0.6),
         alpha=trial.suggest_float("alpha", 0.1, 0.9),
         gamma=trial.suggest_float("gamma", 1.0, 5.0),
     )
@@ -311,7 +298,7 @@ def objective(trial):
     optimizer = AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=lr,
-        eps=trial.suggest_float("eps", 1e-8, 1e-6),
+        eps=trial.suggest_float("eps", 1e-7, 1e-4),
         weight_decay=trial.suggest_float("weight_decay", 0.0, 0.1),
     )
     total_steps = len(train_dataloader) * num_epochs
@@ -379,7 +366,7 @@ def objective(trial):
 
 if __name__ == "__main__":
     study = optuna.create_study(
-        study_name="RobertaEI_New",
+        study_name="RobertaEI_2",
         direction="maximize",
         storage="sqlite:///hyperparamsearch.db",
         load_if_exists=True,

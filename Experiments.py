@@ -53,8 +53,8 @@ ALPHA = 0.338
 GAMMA = 1.30
 LR = 0.000014523474567726823
 EPS = 9.730e-7
-WDECAY = 0.03983034553582014
-NUM_WARMUP = 37
+WDECAY = 0.09
+NUM_WARMUP = 17
 RUN_ID = "".join(random.choice("0123456789ABCDEF") for i in range(6))
 FILE = "./Data/"
 FREEZE_LAYERS = False
@@ -78,6 +78,9 @@ print(f"Num Warmup: {NUM_WARMUP}")
 gc.collect()
 torch.cuda.empty_cache()
 
+random.seed(28)
+np.random.seed(28)
+torch.manual_seed(28)
 
 def df_to_tensor(X, y):
     input_ids, attention_masks = encode_texts(
@@ -135,7 +138,13 @@ class RobertaEI(RobertaForSequenceClassification):
         super(RobertaEI, self).__init__(config)
         self.roberta = RobertaModel(config)
         self.dropout = nn.Dropout(p=DROPUT_RATE)  # You can adjust the dropout probability
-        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+        self.classifier = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=DROPUT_RATE),
+            nn.Linear(config.hidden_size, config.num_labels),
+        )
+        # self.classifier = nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(
         self,
@@ -232,7 +241,6 @@ if os.path.isdir(FILE):
             df = pd.concat([df, file_df], ignore_index=True)
 
 df = preprocess(df)
-print(df[TARGET_CLASS].value_counts())
 
 print("Main Class Distribution")
 check_classes(df, TARGET_CLASS)
