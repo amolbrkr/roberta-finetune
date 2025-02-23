@@ -256,6 +256,7 @@ def objective(trial):
     batch_size = trial.suggest_categorical("batch_size", [8, 16, 32])
     lr = trial.suggest_float("lr", 8e-6, 2e-5, log=True)
     num_epochs = trial.suggest_categorical("num_epochs", [5, 8, 10, 12, 15, 20])
+    threshold = trial.suggest_float("threshold", 0.1, 0.9)
 
     # Device setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -333,8 +334,38 @@ def objective(trial):
         )
 
     # Validation
+    # model.eval()
+    # total_preds = []
+    # total_true = []
+    # for batch in val_dataloader:
+    #     b_input_ids = batch[0].to(device)
+    #     b_input_mask = batch[1].to(device)
+    #     b_labels = batch[2].to(device)
+
+    #     with torch.no_grad():
+    #         outputs = model(input_ids=b_input_ids, attention_mask=b_input_mask)
+    #     logits = outputs[0]
+    #     preds = torch.argmax(logits, dim=1).detach().cpu().numpy()
+    #     total_preds.extend(preds)
+    #     total_true.extend(b_labels.detach().cpu().numpy())
+
+    # # Print classification report
+    # print("Classification Report: ")
+    # print(classification_report(total_true, total_preds))
+
+    # # Use weighted F1 score as objective metric
+    # f1 = f1_score(total_true, total_preds, average="weighted")
+    # print("Validation F1 Score: ", f1)
+
+    # # return f1
+    # # Instead of returning the F1 Score, return the F1 score for postive class (class 1)
+    # # This is done to ensure that the model is not biased towards the majority class
+    # f1_positive = f1_score(total_true, total_preds, average="binary", pos_label=1)
+    # print("Validation F1 Score (Positive Class): ", f1_positive)
+    # return f1_positive
+
     model.eval()
-    total_preds = []
+    total_probs = []  # Store probabilities for Class 1
     total_true = []
     for batch in val_dataloader:
         b_input_ids = batch[0].to(device)
@@ -344,29 +375,22 @@ def objective(trial):
         with torch.no_grad():
             outputs = model(input_ids=b_input_ids, attention_mask=b_input_mask)
         logits = outputs[0]
-        preds = torch.argmax(logits, dim=1).detach().cpu().numpy()
-        total_preds.extend(preds)
+        probs = torch.softmax(logits, dim=1)  # Get probabilities [class 0, class 1]
+        total_probs.extend(probs[:, 1].detach().cpu().numpy())  # Probabilities for Class 1
         total_true.extend(b_labels.detach().cpu().numpy())
 
-    # Print classification report
-    print("Classification Report: ")
-    print(classification_report(total_true, total_preds))
+    # Apply threshold to get predictions
+    total_preds = [1 if prob > threshold else 0 for prob in total_probs]
 
-    # Use weighted F1 score as objective metric
-    f1 = f1_score(total_true, total_preds, average="weighted")
-    print("Validation F1 Score: ", f1)
-
-    # return f1
-    # Instead of returning the F1 Score, return the F1 score for postive class (class 1)
-    # This is done to ensure that the model is not biased towards the majority class
+    # Compute F1 for Class 1
     f1_positive = f1_score(total_true, total_preds, average="binary", pos_label=1)
-    print("Validation F1 Score (Positive Class): ", f1_positive)
     return f1_positive
 
 
 if __name__ == "__main__":
     study = optuna.create_study(
-        study_name="RobertaEI_2",
+        study_name="RobertaEI_3",
+        sampler=optuna.samplers.TPESampler(),  # Handles mixed hyperparameters well
         direction="maximize",
         storage="sqlite:///hyperparamsearch.db",
         load_if_exists=True,
