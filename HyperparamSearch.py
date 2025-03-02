@@ -17,6 +17,9 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score, classification_report
 
+from imblearn.over_sampling import RandomOverSampler
+from imblearn.under_sampling import RandomUnderSampler
+
 from transformers import (
     RobertaModel,
     RobertaConfig,
@@ -26,7 +29,9 @@ from transformers import (
 )
 
 DATA_DIR = "../Data/"
-TARGET_CLASS = "class_freefair"
+TARGET_CLASS = "class_fraud"
+UPSAMPLE = True
+STUDY_NAME = "RobertaEI_Fraud_2"
 
 
 def df_to_tensor(X, y, tokenizer):
@@ -187,9 +192,7 @@ def load_data(DATA_DIR):
             if file.endswith(".xlsx"):
                 # Only read the following columuns: ['Author Name', 'Message', 'Party', 'Free Fair', 'Fraud']
                 check_cols = ["Author Name", "Message", "Party", "Free Fair", "Fraud"]
-                file_df = pd.read_excel(
-                    DATA_DIR + file, usecols=lambda x: x in check_cols
-                )
+                file_df = pd.read_excel(DATA_DIR + file, usecols=lambda x: x in check_cols)
                 print("Loaded File: ", file)
                 # Rename Author_name to page_name, Message to text, Party to party, Free Fair to class_freefair, Fraud to class_fraud
                 file_df.rename(
@@ -204,10 +207,9 @@ def load_data(DATA_DIR):
                 )
 
                 # Convert class_ columns to integers, text to string
-                file_df["class_freefair"] = (
-                    file_df["class_freefair"].fillna(0).astype(int)
-                )
+                file_df["class_freefair"] = file_df["class_freefair"].fillna(0).astype(int)
                 file_df["class_fraud"] = file_df["class_fraud"].fillna(0).astype(int)
+                file_df["class_fraud"] = file_df["class_fraud"].replace(9, 1)
                 file_df["text"] = file_df["text"].fillna("").astype(str)
 
                 # party should only be Democrat or Republican, check if these strings are present in the column and assign the value accordingly
@@ -248,6 +250,11 @@ def objective(trial):
     # Split dataset
     X = df["text"].to_frame()
     y = df[TARGET_CLASS].to_frame()
+
+    if UPSAMPLE:
+        ros = RandomOverSampler(random_state=28)
+        X, y = ros.fit_resample(X, y)
+
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=28
     )
@@ -256,7 +263,7 @@ def objective(trial):
     batch_size = trial.suggest_categorical("batch_size", [8, 16, 32])
     lr = trial.suggest_float("lr", 8e-6, 2e-5, log=True)
     num_epochs = trial.suggest_categorical("num_epochs", [5, 8, 10, 12, 15, 20])
-    threshold = trial.suggest_float("threshold", 0.1, 0.9)
+    # threshold = trial.suggest_float("threshold", 0.1, 0.9)
 
     # Device setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -334,38 +341,8 @@ def objective(trial):
         )
 
     # Validation
-    # model.eval()
-    # total_preds = []
-    # total_true = []
-    # for batch in val_dataloader:
-    #     b_input_ids = batch[0].to(device)
-    #     b_input_mask = batch[1].to(device)
-    #     b_labels = batch[2].to(device)
-
-    #     with torch.no_grad():
-    #         outputs = model(input_ids=b_input_ids, attention_mask=b_input_mask)
-    #     logits = outputs[0]
-    #     preds = torch.argmax(logits, dim=1).detach().cpu().numpy()
-    #     total_preds.extend(preds)
-    #     total_true.extend(b_labels.detach().cpu().numpy())
-
-    # # Print classification report
-    # print("Classification Report: ")
-    # print(classification_report(total_true, total_preds))
-
-    # # Use weighted F1 score as objective metric
-    # f1 = f1_score(total_true, total_preds, average="weighted")
-    # print("Validation F1 Score: ", f1)
-
-    # # return f1
-    # # Instead of returning the F1 Score, return the F1 score for postive class (class 1)
-    # # This is done to ensure that the model is not biased towards the majority class
-    # f1_positive = f1_score(total_true, total_preds, average="binary", pos_label=1)
-    # print("Validation F1 Score (Positive Class): ", f1_positive)
-    # return f1_positive
-
     model.eval()
-    total_probs = []  # Store probabilities for Class 1
+    total_preds = []
     total_true = []
     for batch in val_dataloader:
         b_input_ids = batch[0].to(device)
@@ -375,28 +352,54 @@ def objective(trial):
         with torch.no_grad():
             outputs = model(input_ids=b_input_ids, attention_mask=b_input_mask)
         logits = outputs[0]
-        probs = torch.softmax(logits, dim=1)  # Get probabilities [class 0, class 1]
-        total_probs.extend(probs[:, 1].detach().cpu().numpy())  # Probabilities for Class 1
+        preds = torch.argmax(logits, dim=1).detach().cpu().numpy()
+        total_preds.extend(preds)
         total_true.extend(b_labels.detach().cpu().numpy())
 
-    # Apply threshold to get predictions
-    total_preds = [1 if prob > threshold else 0 for prob in total_probs]
+    # Print classification report
+    print("Classification Report: ")
+    print(classification_report(total_true, total_preds))
 
-    # Compute F1 for Class 1
+    # return f1
+    # Instead of returning the F1 Score, return the F1 score for postive class (class 1)
+    # This is done to ensure that the model is not biased towards the majority class
     f1_positive = f1_score(total_true, total_preds, average="binary", pos_label=1)
+    print("Validation F1 Score (Positive Class): ", f1_positive)
     return f1_positive
+
+    # Run this if tuning Threshold
+    # model.eval()
+    # total_probs = []  # Store probabilities for Class 1
+    # total_true = []
+    # for batch in val_dataloader:
+    #     b_input_ids = batch[0].to(device)
+    #     b_input_mask = batch[1].to(device)
+    #     b_labels = batch[2].to(device)
+
+    #     with torch.no_grad():
+    #         outputs = model(input_ids=b_input_ids, attention_mask=b_input_mask)
+    #     logits = outputs[0]
+    #     probs = torch.softmax(logits, dim=1)  # Get probabilities [class 0, class 1]
+    #     total_probs.extend(probs[:, 1].detach().cpu().numpy())  # Probabilities for Class 1
+    #     total_true.extend(b_labels.detach().cpu().numpy())
+
+    # # Apply threshold to get predictions
+    # total_preds = [1 if prob > threshold else 0 for prob in total_probs]
+
+    # # Compute F1 for Class 1
+    # f1_positive = f1_score(total_true, total_preds, average="binary", pos_label=1)
+    # return f1_positive
 
 
 if __name__ == "__main__":
     study = optuna.create_study(
-        study_name="RobertaEI_3",
-        sampler=optuna.samplers.TPESampler(),  # Handles mixed hyperparameters well
+        study_name=STUDY_NAME,
         direction="maximize",
         storage="sqlite:///hyperparamsearch.db",
         load_if_exists=True,
     )
 
-    study.optimize(objective, n_trials=100)
+    study.optimize(objective, n_trials=200)
     print("Best trial:")
     trial = study.best_trial
     print("  F1 Score: {}".format(trial.value))

@@ -33,6 +33,7 @@ from transformers import (
     AutoModel,
     AutoModelForSequenceClassification,
 )
+
 from transformers import (
     RobertaTokenizer,
     RobertaForSequenceClassification,
@@ -44,22 +45,21 @@ from transformers import get_linear_schedule_with_warmup
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, TensorDataset, RandomSampler, SequentialSampler
 
-BATCH_SIZE = 32
-EPOCHS = 12
+BATCH_SIZE = 8
+EPOCHS = 20
 UPSAMPLE = True
 DOWNSAMPLE = False
-DROPUT_RATE = 0.583
-ALPHA = 0.338
-GAMMA = 1.30
-LR = 0.000014523474567726823
-EPS = 9.730e-7
-WDECAY = 0.09
-NUM_WARMUP = 17
+DROPUT_RATE = 0.3358270767825926
+ALPHA = 0.3180801778608423
+GAMMA = 1.1119078547489527
+LR = 9.359632502611347e-06
+EPS = 4.206970346437136e-05
+WDECAY = 0.016026238488865478
+NUM_WARMUP = 8
 RUN_ID = "".join(random.choice("0123456789ABCDEF") for i in range(6))
 FILE = "./Data/"
 FREEZE_LAYERS = False
-USE_CLASS_WEIGHTS = True
-TARGET_CLASS = "class_freefair"
+TARGET_CLASS = "class_freefair" # "class_freefair" or "class_fraud"
 
 print(f"RUN ID: {RUN_ID}")
 print(f"Data Used: {FILE}")
@@ -68,7 +68,6 @@ print(
     f"Freezed Layers: {FREEZE_LAYERS}, Up Sample: {UPSAMPLE}, Down Sample: {DOWNSAMPLE}"
 )
 print(f"Batch Size: {BATCH_SIZE}, Epochs: {EPOCHS}")
-print(f"Class Weights: {USE_CLASS_WEIGHTS}")
 print(f"Dropout Rate: {DROPUT_RATE}")
 print(f"Alpha: {ALPHA}, Gamma: {GAMMA}")
 print(f"Learning Rate: {LR}, Epsilon: {EPS}, Weight Decay: {WDECAY}")
@@ -81,6 +80,7 @@ torch.cuda.empty_cache()
 random.seed(28)
 np.random.seed(28)
 torch.manual_seed(28)
+
 
 def df_to_tensor(X, y):
     input_ids, attention_masks = encode_texts(
@@ -137,9 +137,16 @@ class RobertaEI(RobertaForSequenceClassification):
     def __init__(self, config):
         super(RobertaEI, self).__init__(config)
         self.roberta = RobertaModel(config)
-        self.dropout = nn.Dropout(p=DROPUT_RATE)  # You can adjust the dropout probability
+        self.dropout = nn.Dropout(
+            p=DROPUT_RATE
+        )  # You can adjust the dropout probability
         self.classifier = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=DROPUT_RATE),
+            # nn.Linear(config.hidden_size, config.num_labels),
+            nn.Linear(config.hidden_size, config.hidden_size),
+            # Add one more fully connected layer
             nn.ReLU(),
             nn.Dropout(p=DROPUT_RATE),
             nn.Linear(config.hidden_size, config.num_labels),
@@ -171,7 +178,7 @@ class RobertaEI(RobertaForSequenceClassification):
         loss = None
         if labels is not None:
             # loss_fct = nn.CrossEntropyLoss(weight=class_weights)
-            loss_fct = FocalLoss(alpha = ALPHA, gamma = GAMMA)
+            loss_fct = FocalLoss(alpha=ALPHA, gamma=GAMMA)
             loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
 
         output = (logits,) + outputs[2:]
@@ -185,7 +192,7 @@ class FocalLoss(nn.Module):
         self.gamma = gamma  # Focusing parameter
 
     def forward(self, inputs, targets):
-        ce_loss = nn.CrossEntropyLoss(reduction='none')(inputs, targets)
+        ce_loss = nn.CrossEntropyLoss(reduction="none")(inputs, targets)
         pt = torch.exp(-ce_loss)
         focal_loss = (self.alpha * (1 - pt) ** self.gamma * ce_loss).mean()
         return focal_loss
@@ -285,7 +292,6 @@ model = RobertaEI.from_pretrained(
     "roberta-base", num_labels=len(y_train.value_counts())
 )
 model.to(device)
-
 
 
 # For Weighted Loss Function
