@@ -31,7 +31,7 @@ from transformers import (
 DATA_DIR = "../Data/"
 TARGET_CLASS = "class_fraud"
 UPSAMPLE = True
-STUDY_NAME = "RobertaEI_Fraud_2"
+STUDY_NAME = "RobertaEI_Fraud_3"
 
 
 def df_to_tensor(X, y, tokenizer):
@@ -81,22 +81,21 @@ def preprocess(df, min_wc=5):
 
 
 class RobertaEI(RobertaForSequenceClassification):
-    def __init__(self, config, dropout_rate=0.1, alpha=0.25, gamma=2.0):
+    def __init__(self, config):
         super(RobertaEI, self).__init__(config)
         self.roberta = RobertaModel(config)
         self.dropout = nn.Dropout(
-            p=dropout_rate
-        )  # You can adjust the dropout probability
+            p=DROPUT_RATE
+        )
         self.classifier = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size),
             nn.ReLU(),
-            nn.Dropout(p=dropout_rate),
+            nn.Dropout(p=DROPUT_RATE),
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=DROPUT_RATE),
             nn.Linear(config.hidden_size, config.num_labels),
         )
-        self.alpha = alpha
-        self.gamma = gamma
-
-        # self.classifier = nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(
         self,
@@ -123,7 +122,7 @@ class RobertaEI(RobertaForSequenceClassification):
         loss = None
         if labels is not None:
             # loss_fct = nn.CrossEntropyLoss(weight=class_weights)
-            loss_fct = FocalLoss(alpha=self.alpha, gamma=self.gamma)
+            loss_fct = FocalLoss(alpha=ALPHA, gamma=GAMMA)
             loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
 
         output = (logits,) + outputs[2:]
@@ -251,13 +250,14 @@ def objective(trial):
     X = df["text"].to_frame()
     y = df[TARGET_CLASS].to_frame()
 
-    if UPSAMPLE:
-        ros = RandomOverSampler(random_state=28)
-        X, y = ros.fit_resample(X, y)
 
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=28
     )
+
+    if UPSAMPLE:
+        ros = RandomOverSampler(random_state=28)
+        X_train, y_train = ros.fit_resample(X_train, y_train)
 
     # Hyperparameters suggestions for batch size and learning rate
     batch_size = trial.suggest_categorical("batch_size", [8, 16, 32])
