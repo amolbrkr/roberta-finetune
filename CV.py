@@ -43,20 +43,21 @@ from transformers import get_linear_schedule_with_warmup
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, TensorDataset, RandomSampler, SequentialSampler
 
+print("Kfold with NO Upsampling")
 BATCH_SIZE = 8
 EPOCHS = 20
-UPSAMPLE = True
+DROPUT_RATE = 0.5147110342609421
+UPSAMPLE = False
 DOWNSAMPLE = False
-DROPUT_RATE = 0.3358270767825926
-ALPHA = 0.3180801778608423
-GAMMA = 1.1119078547489527
-LR = 9.359632502611347e-06
-EPS = 4.206970346437136e-05
-WDECAY = 0.016026238488865478
-NUM_WARMUP = 8
+ALPHA = 0.5255022533422351
+GAMMA = 1.7175764384007821
+EPS = 8.105701264441974e-05
+WDECAY = 0.08407571894449765
+NUM_WARMUP = 24
+LR = 9.274425360018714e-06
 RUN_ID = "".join(random.choice("0123456789ABCDEF") for i in range(6))
 FILE = "../Data/"
-TARGET_CLASS = "class_freefair"  # "class_freefair" or "class_fraud"
+TARGET_CLASS = "class_fraud"  # "class_freefair" or "class_fraud"
 SAVE_MODEL = True
 
 print("Stratified KFold with upsampling")
@@ -490,32 +491,24 @@ test_dataloader = DataLoader(
 )
 
 best_model.eval()
-total_eval_accuracy = 0
-total_eval_loss = 0
+predictions, true_labels = [], []
 
 for batch in test_dataloader:
-    b_input_ids = batch[0].to(device)
-    b_input_mask = batch[1].to(device)
-    b_labels = batch[2].to(device)
+    b_input_ids, b_attention_masks, b_labels = batch
+    b_input_ids = b_input_ids.to(device)
+    b_attention_masks = b_attention_masks.to(device)
+    b_labels = b_labels.to(device)
 
     with torch.no_grad():
-        output = best_model(
-            b_input_ids,
-            token_type_ids=None,
-            attention_mask=b_input_mask,
-            labels=b_labels,
-        )
+        outputs = model(b_input_ids, attention_mask=b_attention_masks)
 
-    loss, logits = output[0], output[1]
-    total_eval_loss += loss.item()
-    label_ids = b_labels.to("cpu").numpy()
-    total_eval_accuracy += f1_score(
-        torch.argmax(logits, dim=1).cpu().numpy(), label_ids, average="weighted"
-    )
+    logits = outputs[0]
+    predictions.extend(torch.argmax(logits, dim=1).cpu().numpy())
+    true_labels.extend(b_labels.cpu().numpy())
 
-print("Total Test Loss: ", total_eval_loss / len(test_dataloader))
-print("Test F1 Score: ", total_eval_accuracy / len(test_dataloader))
-
+print(classification_report(true_labels, predictions, target_names=classList, labels=[0, 1]))
+conf_matrix = confusion_matrix(true_labels, predictions)
+print(conf_matrix)
 
 # Save the best model
 if SAVE_MODEL:
@@ -525,7 +518,7 @@ if SAVE_MODEL:
     bin_file_path = "../Models/robertaei.bin"
     config_file_path = "../Models/robertaei.json"
 
-    tar_file_path = "../Models/roberta_freefair.tar.gz"
+    tar_file_path = f"../Models/roberta_{TARGET_CLASS}_{RUN_ID}.tar.gz"
 
     torch.save(model.state_dict(), bin_file_path)
 
